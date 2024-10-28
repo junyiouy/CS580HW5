@@ -60,12 +60,10 @@ class EdgeDDA {
     // Class to represent an edge with DDA algorithm
 public:
     float x = 0.0f, z = 0.0f;
-    float u = 0.0f, v = 0.0f; // Add UV interpolation
     float dx = 0.0f, dz = 0.0f;
-    float du = 0.0f, dv = 0.0f; // Add slopes for UV interpolation
     int yStart = 0, yEnd = 0;
 
-    static EdgeDDA setupEdgeDDA(const GzCoord& v1, const GzCoord& v2, const GzTextureIndex& uv1, const GzTextureIndex& uv2) {
+    static EdgeDDA setupEdgeDDA(const GzCoord& v1, const GzCoord& v2) {
         EdgeDDA dda;
         dda.yStart = std::ceil(v1[1]);
         dda.yEnd = std::ceil(v2[1]);
@@ -74,15 +72,10 @@ public:
         dda.dx = (v2[0] - v1[0]) / dy;
         dda.dz = (v2[2] - v1[2]) / dy;
 
-        // Set up UV interpolation slopes
-        dda.du = (uv2[0] - uv1[0]) / dy;
-        dda.dv = (uv2[1] - uv1[1]) / dy;
 
         // Set initial values for x, z, u, and v
         dda.x = v1[0] + dda.dx * (dda.yStart - v1[1]);  // x position for ceiled yStart
         dda.z = v1[2] + dda.dz * (dda.yStart - v1[1]);  // z position for ceiled yStart
-        dda.u = uv1[0] + dda.du * (dda.yStart - v1[1]); // u position for ceiled yStart
-        dda.v = uv1[1] + dda.dv * (dda.yStart - v1[1]); // v position for ceiled yStart
 
         return dda;
     }
@@ -873,8 +866,6 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
     InterpolatePlane_UV(transformedVertices, perspUList, 0, uplane[0], uplane[1], uplane[2], uplane[3]);
     InterpolatePlane_UV(transformedVertices, perspVList, 1, vplane[0], vplane[1], vplane[2], vplane[3]);
 
-    // Interpolate z
-
     // Define the interpolation planes for red, green, blue, and normals
     float redPlane[4], greenPlane[4], bluePlane[4];
     InterpolatePlane(transformedVertices, finalColor, 0, redPlane[0], redPlane[1], redPlane[2], redPlane[3]);
@@ -887,9 +878,9 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
     InterpolatePlane(transformedVertices, transformedNormals, 2, normalZPlane[0], normalZPlane[1], normalZPlane[2], normalZPlane[3]);
 
     // Step 7: Scanline rasterization
-    EdgeDDA dda12 = EdgeDDA::setupEdgeDDA(transformedVertices[0], transformedVertices[1], uvList[0], uvList[1]);
-    EdgeDDA dda23 = EdgeDDA::setupEdgeDDA(transformedVertices[1], transformedVertices[2], uvList[1], uvList[2]);
-    EdgeDDA dda13 = EdgeDDA::setupEdgeDDA(transformedVertices[0], transformedVertices[2], uvList[0], uvList[2]);
+    EdgeDDA dda12 = EdgeDDA::setupEdgeDDA(transformedVertices[0], transformedVertices[1]);
+    EdgeDDA dda23 = EdgeDDA::setupEdgeDDA(transformedVertices[1], transformedVertices[2]);
+    EdgeDDA dda13 = EdgeDDA::setupEdgeDDA(transformedVertices[0], transformedVertices[2]);
 
     EdgeDDA* leftDDA;
     EdgeDDA* rightDDA;
@@ -918,10 +909,6 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
 
         float z = leftDDA->z;
         float dz = (rightDDA->z - leftDDA->z) / (xEnd - xStart);
-        float u = leftDDA->u;
-        float du = (rightDDA->u - leftDDA->u) / (xEnd - xStart);
-        float v = leftDDA->v;
-        float dv = (rightDDA->v - leftDDA->v) / (xEnd - xStart);
 
 		interp_mode = GZ_NORMALS; // Set interpolation mode to color
 
@@ -996,16 +983,14 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
             }
 
             z += dz;
-            u += du;
-            v += dv;
+
         }
 
         leftDDA->x += leftDDA->dx;
         rightDDA->x += rightDDA->dx;
         leftDDA->z += leftDDA->dz;
         rightDDA->z += rightDDA->dz;
-		leftDDA->u += leftDDA->du;
-		rightDDA->u += rightDDA->du;
+
     }
 
     return GZ_SUCCESS;
