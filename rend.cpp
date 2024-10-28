@@ -258,7 +258,7 @@ int GzRender::GzBeginRender()
     GzMatrix Xiw;
 
     // Compute Xpi
-    float d = 1.0f / tanf((m_camera.FOV / 2.0f) * (PI / 180.0f)); // Convert FOV to radians
+    d = 1.0f / tanf((m_camera.FOV / 2.0f) * (PI / 180.0f)); // Convert FOV to radians
     Xpi[0][0] = 1.0f; Xpi[0][1] = 0.0f; Xpi[0][2] = 0.0f;    Xpi[0][3] = 0.0f;
     Xpi[1][0] = 0.0f; Xpi[1][1] = 1.0f; Xpi[1][2] = 0.0f;    Xpi[1][3] = 0.0f;
     Xpi[2][0] = 0.0f; Xpi[2][1] = 0.0f; Xpi[2][2] = 1.0f / d;    Xpi[2][3] = 0.0f;
@@ -511,16 +511,29 @@ int GzRender::GzPutAttribute(int numAttributes, GzToken* nameList, GzPointer* va
             spec = *(float*)valueList[i];
             break;
         }
-		case GZ_TEXTURE_MAP: {
-			// Set texture function pointer
+        case GZ_TEXTURE_MAP: {
+            // Set texture function pointer
             tex_fun = (GzTexture)valueList[i];
-			break;
-
+            break;
+        }
         }
     }
     return GZ_SUCCESS;
 }
 
+// Interpolate plane equation based on vertex attributes
+void InterpolatePlane_UV(GzCoord* vertices, float* attributes, int index, float& A, float& B, float& C, float& D) {
+    float X1 = vertices[1][0] - vertices[0][0];
+    float Y1 = vertices[1][1] - vertices[0][1];
+    float Z1 = attributes[1] - attributes[0];
+    float X2 = vertices[2][0] - vertices[0][0];
+    float Y2 = vertices[2][1] - vertices[0][1];
+    float Z2 = attributes[2] - attributes[0];
+    A = (Y1 * Z2) - (Z1 * Y2);
+    B = -((X1 * Z2) - (Z1 * X2));
+    C = (X1 * Y2) - (Y1 * X2);
+    D = -1.0f * (A * vertices[0][0] + B * vertices[0][1] + C * attributes[0]);
+}
 
 // Interpolate plane equation based on vertex attributes
 void InterpolatePlane(GzCoord* vertices, GzColor* attributes, int index, float& A, float& B, float& C, float& D) {
@@ -811,19 +824,21 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
     // Step 1: Transform vertices and normals to camera space using global function
     TransformVerticesAndNormals(vertices, normals, transformedVertices, transformedNormals, Ximage, Xnorm, matlevel);
 
-
     // Sort vertices by Y coordinate
     if (transformedVertices[1][1] < transformedVertices[0][1]) {
         std::swap(transformedVertices[1], transformedVertices[0]);
         std::swap(transformedNormals[1], transformedNormals[0]);
+        std::swap(uvList[1], uvList[0]);
     }
     if (transformedVertices[2][1] < transformedVertices[1][1]) {
         std::swap(transformedVertices[2], transformedVertices[1]);
         std::swap(transformedNormals[2], transformedNormals[1]);
+        std::swap(uvList[2], uvList[1]);
     }
     if (transformedVertices[1][1] < transformedVertices[0][1]) {
         std::swap(transformedVertices[1], transformedVertices[0]);
         std::swap(transformedNormals[1], transformedNormals[0]);
+        std::swap(uvList[1], uvList[0]);
     }
 
     // Step 2: Check if all vertices are behind the camera (z < 0)
@@ -832,22 +847,14 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
     }
 
     // Step 3: Convert each vertex's (u, v) to perspective space (U, V)
-    GzTextureIndex perspectiveUV[3];
-    float Vz[3]; // Store Vz for each vertex
-
-    for (int i = 0; i < 3; ++i) {
-        // Calculate Vz for each vertex using its depth
-        Vz[i] = vertices[i][2] / (INT_MAX - vertices[i][2]);
-
-        // Convert (u, v) to perspective space (U, V)
-        perspectiveUV[i][0] = uvList[i][0] / (vertices[i][2] + Vz[i]);
-        perspectiveUV[i][1] = uvList[i][1] / (vertices[i][2] + Vz[i]);
+    float vZPrime;
+    float perspUList[3];
+    float perspVList[3];
+    for (int j = 0; j < 3; j++) {
+        vZPrime = transformedVertices[j][2] / ((float)MAXINT - transformedVertices[j][2]);
+        perspUList[j] = uvList[j][U] / (vZPrime + 1.0f);
+        perspVList[j] = uvList[j][V] / (vZPrime + 1.0f);
     }
-
-
-
-
-
 
     // Step 4: Calculate edge coefficients using global function
     float coeffA12, coeffB12, coeffC12, coeffA23, coeffB23, coeffC23, coeffA31, coeffB31, coeffC31;
@@ -861,6 +868,13 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
     GzColor finalColor[3];
     InterpolateColorsAndNormals(transformedNormals, finalColor, lights, numlights, Ks, Kd, Ka, ambientlight, spec);
 
+	// Interpolate u and v for texture mapping
+	float uplane[4], vplane[4];
+    InterpolatePlane_UV(transformedVertices, perspUList, 0, uplane[0], uplane[1], uplane[2], uplane[3]);
+    InterpolatePlane_UV(transformedVertices, perspVList, 1, vplane[0], vplane[1], vplane[2], vplane[3]);
+
+    // Interpolate z
+
     // Define the interpolation planes for red, green, blue, and normals
     float redPlane[4], greenPlane[4], bluePlane[4];
     InterpolatePlane(transformedVertices, finalColor, 0, redPlane[0], redPlane[1], redPlane[2], redPlane[3]);
@@ -873,26 +887,18 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
     InterpolatePlane(transformedVertices, transformedNormals, 2, normalZPlane[0], normalZPlane[1], normalZPlane[2], normalZPlane[3]);
 
     // Step 7: Scanline rasterization
-    if (transformedVertices[1][1] < transformedVertices[0][1]) std::swap(transformedVertices[1], transformedVertices[0]);
-    if (transformedVertices[2][1] < transformedVertices[1][1]) std::swap(transformedVertices[2], transformedVertices[1]);
-    if (transformedVertices[1][1] < transformedVertices[0][1]) std::swap(transformedVertices[1], transformedVertices[0]);
-
-    // Setup DDA for each edge with texture coordinates
-    EdgeDDA dda12 = EdgeDDA::setupEdgeDDA(transformedVertices[0], transformedVertices[1], perspectiveUV[0], perspectiveUV[1]);
-    EdgeDDA dda23 = EdgeDDA::setupEdgeDDA(transformedVertices[1], transformedVertices[2], perspectiveUV[1], perspectiveUV[2]);
-    EdgeDDA dda13 = EdgeDDA::setupEdgeDDA(transformedVertices[0], transformedVertices[2], perspectiveUV[0], perspectiveUV[2]);
-
+    EdgeDDA dda12 = EdgeDDA::setupEdgeDDA(transformedVertices[0], transformedVertices[1], uvList[0], uvList[1]);
+    EdgeDDA dda23 = EdgeDDA::setupEdgeDDA(transformedVertices[1], transformedVertices[2], uvList[1], uvList[2]);
+    EdgeDDA dda13 = EdgeDDA::setupEdgeDDA(transformedVertices[0], transformedVertices[2], uvList[0], uvList[2]);
 
     EdgeDDA* leftDDA;
     EdgeDDA* rightDDA;
 
-    // Determine left and right edges
     float slope12 = (transformedVertices[1][0] - transformedVertices[0][0]) / (transformedVertices[1][1] - transformedVertices[0][1]);
     float slope13 = (transformedVertices[2][0] - transformedVertices[0][0]) / (transformedVertices[2][1] - transformedVertices[0][1]);
 
     int reverse = (slope12 < slope13) ? 0 : 1;
 
-    // Scanline rasterization
     for (int y = dda12.yStart; y < dda23.yEnd; ++y) {
         if (y < dda23.yStart) {
             leftDDA = &dda12;
@@ -910,57 +916,67 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
         int xStart = std::ceil(leftDDA->x);
         int xEnd = std::ceil(rightDDA->x);
 
-        // Interpolate Z, red, green, blue colors along the scanline
         float z = leftDDA->z;
         float dz = (rightDDA->z - leftDDA->z) / (xEnd - xStart);
-
         float u = leftDDA->u;
         float du = (rightDDA->u - leftDDA->u) / (xEnd - xStart);
-
         float v = leftDDA->v;
         float dv = (rightDDA->v - leftDDA->v) / (xEnd - xStart);
 
-        interp_mode = GZ_NORMALS;
+		interp_mode = GZ_NORMALS; // Set interpolation mode to color
 
         for (int x = xStart; x < xEnd; ++x) {
             if (x >= 0 && x < xres && y >= 0 && y < yres) {
-                // Use interpolated Z, U, and V for further processing
-                float interpolatedZ = z;
-                float interpolatedU = u;
-                float interpolatedV = v;
+				float interpolatedZ = InterpolateColor(x, y, planeA, planeB, planeC, planeD);
 
-                // Apply perspective correction to get the final (u, v)
-                float Vz_prime = interpolatedZ / (INT_MAX - interpolatedZ);
-                //float finalU = interpolatedU * (Vz_prime + 1.0f);
-                //float finalV = interpolatedV * (Vz_prime + 1.0f);
-                float finalU = interpolatedU;
-                float finalV = interpolatedV;
+                float CurrentU, Currentu;
+                float CurrentV, Currentv;
+                GzColor textureColor = { 1.0f, 1.0f, 1.0f }; // Default white
+				
+				
+                CurrentU = InterpolateColor(x, y, uplane[0], uplane[1], uplane[2], uplane[3]);
+                CurrentV = InterpolateColor(x, y, vplane[0], vplane[1], vplane[2], vplane[3]);
 
-                // Calculate texture color using final (u, v)
-                GzColor textureColor;
-                BilinearInterpolation(finalU, finalV, textureImage, textureWidth, textureHeight, textureColor);
+                float VzPrimeInterpolated = interpolatedZ / ((float)MAXINT - interpolatedZ);
+                Currentu = CurrentU * (VzPrimeInterpolated + 1.0f);
+                Currentv = CurrentV * (VzPrimeInterpolated + 1.0f);
+                int status=0;
+
+                if (interp_mode == GZ_COLOR) {
+                    status = tex_fun(Currentu, Currentv, textureColor);
+                }
+				else if (interp_mode == GZ_FLAT) {
+                    status = 0;
+				}
+				else if (interp_mode == GZ_NORMALS) {
+                    status = tex_fun(Currentu, Currentv, Kd);
+                    status |= tex_fun(Currentu, Currentv, Ka);
+				}
+
+                if (status) {
+					return GZ_FAILURE;
+                }
+                
+
 
                 GzIntensity redIntensity, greenIntensity, blueIntensity;
-
                 if (interp_mode == GZ_FLAT) {
-                    // Flat Shading
-                    redIntensity = ctoi(finalColor[0][0]);
-                    greenIntensity = ctoi(finalColor[0][1]);
-                    blueIntensity = ctoi(finalColor[0][2]);
+                    redIntensity = ctoi(finalColor[0][0] * textureColor[0]);
+                    greenIntensity = ctoi(finalColor[0][1] * textureColor[1]);
+                    blueIntensity = ctoi(finalColor[0][2] * textureColor[2]);
                 }
                 else if (interp_mode == GZ_COLOR) {
-                    // Gouraud Shading
                     GzColor intensity;
                     intensity[0] = InterpolateColor(x, y, redPlane[0], redPlane[1], redPlane[2], redPlane[3]);
                     intensity[1] = InterpolateColor(x, y, greenPlane[0], greenPlane[1], greenPlane[2], greenPlane[3]);
                     intensity[2] = InterpolateColor(x, y, bluePlane[0], bluePlane[1], bluePlane[2], bluePlane[3]);
 
-                    redIntensity = ctoi(intensity[0]);
-                    greenIntensity = ctoi(intensity[1]);
-                    blueIntensity = ctoi(intensity[2]);
+
+                    redIntensity = ctoi(intensity[0] * textureColor[0]);
+                    greenIntensity = ctoi(intensity[1] * textureColor[1]);
+                    blueIntensity = ctoi(intensity[2] * textureColor[2]);
                 }
                 else if (interp_mode == GZ_NORMALS) {
-                    // Phong Shading
                     GzCoord interpolatedNormal;
                     interpolatedNormal[0] = InterpolateColor(x, y, normalXPlane[0], normalXPlane[1], normalXPlane[2], normalXPlane[3]);
                     interpolatedNormal[1] = InterpolateColor(x, y, normalYPlane[0], normalYPlane[1], normalYPlane[2], normalYPlane[3]);
@@ -969,24 +985,29 @@ int GzRender::GzPutTriangle(int numParts, GzToken* nameList, GzPointer* valueLis
                     GzColor intensity;
                     ComputePhongShading(interpolatedNormal, intensity, lights, numlights, Ks, Kd, Ka, ambientlight, spec);
 
-                    redIntensity = ctoi(intensity[0]);
-                    greenIntensity = ctoi(intensity[1]);
-                    blueIntensity = ctoi(intensity[2]);
+                    redIntensity = ctoi(intensity[0] * textureColor[0]);
+                    greenIntensity = ctoi(intensity[1] * textureColor[1]);
+                    blueIntensity = ctoi(intensity[2] * textureColor[2]);
                 }
 
                 if (interpolatedZ < pixelbuffer[ARRAY(x, y)].z) {
                     GzPut(x, y, redIntensity, greenIntensity, blueIntensity, 1, interpolatedZ);
                 }
             }
+
             z += dz;
+            u += du;
+            v += dv;
         }
 
-        // Update DDA for next scanline
         leftDDA->x += leftDDA->dx;
         rightDDA->x += rightDDA->dx;
         leftDDA->z += leftDDA->dz;
         rightDDA->z += rightDDA->dz;
+		leftDDA->u += leftDDA->du;
+		rightDDA->u += rightDDA->du;
     }
 
     return GZ_SUCCESS;
 }
+
